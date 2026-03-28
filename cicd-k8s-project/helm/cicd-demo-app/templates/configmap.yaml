@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cicd-demo-app.fullname" . }}-config
+  namespace: cicd-demo
+  labels:
+    {{- include "cicd-demo-app.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.app.env | quote }}
+  PORT: {{ .Values.app.port | quote }}

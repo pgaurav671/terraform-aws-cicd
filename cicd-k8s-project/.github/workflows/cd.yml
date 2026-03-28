@@ -1,0 +1,111 @@
+name: CD - Deploy to EKS via ArgoCD
+
+on:
+  workflow_run:
+    workflows: ["CI - Build, Test & Push"]
+    types:
+      - completed
+    branches: [main]
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: cicd-demo-app
+  EKS_CLUSTER_NAME: cicd-demo-cluster
+  HELM_CHART_PATH: helm/cicd-demo-app
+
+jobs:
+  deploy:
+    name: Update Helm Values & Sync ArgoCD
+    runs-on: ubuntu-latest
+    # Only deploy if CI workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Get image tag from CI run
+        id: get-tag
+        run: |
+          # Use the commit SHA from the triggering workflow run
+          TAG=${{ github.event.workflow_run.head_sha }}
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Update Helm values with new image tag
+        run: |
+          TAG=${{ steps.get-tag.outputs.image_tag }}
+          REGISTRY=${{ steps.login-ecr.outputs.registry }}
+
+          # Update image tag in values file
+          sed -i "s|tag:.*|tag: \"${TAG}\"|" ${{ env.HELM_CHART_PATH }}/values.yaml
+          sed -i "s|repository:.*|repository: ${REGISTRY}/${{ env.ECR_REPOSITORY }}|" ${{ env.HELM_CHART_PATH }}/values.yaml
+
+          echo "Updated image to: ${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
+
+      - name: Commit and push updated values
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.HELM_CHART_PATH }}/values.yaml
+          git commit -m "chore: deploy image tag ${{ steps.get-tag.outputs.image_tag }} [skip ci]"
+          git push
+
+      - name: Trigger ArgoCD sync
+        run: |
+          # Port-forward ArgoCD server (if not using Ingress)
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          sleep 5
+
+          # Login to ArgoCD
+          argocd login localhost:8080 \
+            --username admin \
+            --password ${{ secrets.ARGOCD_ADMIN_PASSWORD }} \
+            --insecure
+
+          # Sync the application
+          argocd app sync cicd-demo-app --timeout 120
+
+          # Wait for healthy state
+          argocd app wait cicd-demo-app \
+            --health \
+            --timeout 300
+
+      - name: Verify deployment rollout
+        run: |
+          kubectl rollout status deployment/cicd-demo-app \
+            -n cicd-demo \
+            --timeout=300s
+
+      - name: Get Load Balancer URL
+        run: |
+          LB_URL=$(kubectl get svc cicd-demo-app \
+            -n cicd-demo \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "App deployed at: http://${LB_URL}"
+          echo "Health check: http://${LB_URL}/health"

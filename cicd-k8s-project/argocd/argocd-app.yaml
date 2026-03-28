@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cicd-demo-app
+  namespace: argocd
+  # Auto-delete resources when this Application is deleted
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # Source: your Git repo containing the Helm chart
+  source:
+    repoURL: https://github.com/<YOUR_GITHUB_USERNAME>/<YOUR_REPO_NAME>.git
+    targetRevision: HEAD
+    path: helm/cicd-demo-app
+
+    helm:
+      valueFiles:
+        - values.yaml
+
+  # Destination: EKS cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cicd-demo
+
+  # Sync policy — auto-sync when Git changes
+  syncPolicy:
+    automated:
+      prune: true       # Remove resources deleted from Git
+      selfHeal: true    # Revert manual changes to cluster
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

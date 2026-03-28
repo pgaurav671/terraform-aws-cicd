@@ -1,0 +1,22 @@
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: cicd-demo-app:local
+    container_name: cicd-demo-app
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - APP_ENV=local
+      - APP_VERSION=1.0.0
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

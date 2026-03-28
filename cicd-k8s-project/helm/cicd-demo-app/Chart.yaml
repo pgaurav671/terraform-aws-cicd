@@ -1,0 +1,12 @@
+apiVersion: v2
+name: cicd-demo-app
+description: CI/CD Demo Node.js Application Helm Chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: DevOps Team
+keywords:
+  - nodejs
+  - demo
+  - cicd
