@@ -1,0 +1,48 @@
+# =============================================================================
+# Terraform
+# =============================================================================
+
+# Local .terraform directories (provider binaries, modules cache)
+**/.terraform/
+**/.terraform.lock.hcl
+
+# Terraform state files — NEVER commit state to git
+# Use remote state (S3 + DynamoDB) for team projects
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Terraform variable files that may contain secrets
+# Keep terraform.tfvars in git ONLY if it has no secrets
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform plan output (binary, not human-readable)
+*.tfplan
+
+# =============================================================================
+# AWS & Secrets — NEVER commit credentials
+# =============================================================================
+.env
+.env.*
+*.pem
+*.key
+credentials
+aws_credentials
+
+# =============================================================================
+# OS & Editor
+# =============================================================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
