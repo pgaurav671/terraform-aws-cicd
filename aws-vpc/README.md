@@ -6,39 +6,45 @@ A production-ready, multi-tier VPC on AWS built with Terraform.
 
 ## Architecture Diagram
 
-```
-                          Internet
-                             │
-                    ┌────────▼────────┐
-                    │ Internet Gateway │
-                    └────────┬────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │          VPC  10.0.0.0/16               │
-        │                                          │
-        │  ┌───────────────┐  ┌───────────────┐   │
-        │  │ Public Sub 1  │  │ Public Sub 2  │   │
-        │  │ 10.0.1.0/24   │  │ 10.0.2.0/24   │   │
-        │  │ ap-south-1a   │  │ ap-south-1b   │   │
-        │  │ [Bastion/ALB] │  │ [ALB]         │   │
-        │  └──────┬────────┘  └───────────────┘   │
-        │         │ NAT GW                         │
-        │  ┌──────▼────────┐  ┌───────────────┐   │
-        │  │ Priv App Sub 1│  │ Priv App Sub 2│   │
-        │  │ 10.0.10.0/24  │  │ 10.0.11.0/24  │   │
-        │  │ ap-south-1a   │  │ ap-south-1b   │   │
-        │  │ [App servers] │  │ [App servers] │   │
-        │  └──────┬────────┘  └──────┬────────┘   │
-        │         │                  │             │
-        │  ┌──────▼────────┐  ┌──────▼────────┐   │
-        │  │ Priv DB Sub 1 │  │ Priv DB Sub 2 │   │
-        │  │ 10.0.20.0/24  │  │ 10.0.21.0/24  │   │
-        │  │ ap-south-1a   │  │ ap-south-1b   │   │
-        │  │ [RDS/DB]      │  │ [RDS/DB]      │   │
-        │  └───────────────┘  └───────────────┘   │
-        │                                          │
-        │  Flow Logs ──► CloudWatch Log Group      │
-        └──────────────────────────────────────────┘
+```mermaid
+graph TD
+    Internet(["🌐 Internet"])
+
+    subgraph AWS["AWS — ap-south-1"]
+        IGW["🔀 Internet Gateway\nprod-vpc-igw"]
+
+        subgraph VPC["VPC — 10.0.0.0/16  (prod-vpc)"]
+
+            subgraph PUB["Public Tier"]
+                PUB1["📦 Public Subnet 1\n10.0.1.0/24\nap-south-1a\n─────────────\nBastion Host\nALB"]
+                PUB2["📦 Public Subnet 2\n10.0.2.0/24\nap-south-1b\n─────────────\nALB"]
+            end
+
+            NAT["🔁 NAT Gateway\n+ Elastic IP\n(optional)"]
+
+            subgraph APP["Private App Tier"]
+                APP1["📦 Private App Subnet 1\n10.0.10.0/24\nap-south-1a\n─────────────\nApp Servers"]
+                APP2["📦 Private App Subnet 2\n10.0.11.0/24\nap-south-1b\n─────────────\nApp Servers"]
+            end
+
+            subgraph DB["Private DB Tier — Fully Isolated"]
+                DB1["📦 Private DB Subnet 1\n10.0.20.0/24\nap-south-1a\n─────────────\nRDS / ElastiCache"]
+                DB2["📦 Private DB Subnet 2\n10.0.21.0/24\nap-south-1b\n─────────────\nRDS / ElastiCache"]
+            end
+
+            CW["📋 CloudWatch\nVPC Flow Logs\n(optional)"]
+        end
+    end
+
+    Internet -->|HTTP · HTTPS · SSH| IGW
+    IGW --> PUB1
+    IGW --> PUB2
+    PUB1 -->|outbound only| NAT
+    NAT --> APP1
+    NAT --> APP2
+    APP1 --> DB1
+    APP2 --> DB2
+    VPC -.->|all traffic logs| CW
 ```
 
 ---
@@ -69,25 +75,36 @@ A production-ready, multi-tier VPC on AWS built with Terraform.
 
 ## Traffic Flow
 
-```
-Internet
-  │
-  ▼
-Internet Gateway
-  │
-  ▼
-ALB (public subnet) ──► Security Group: alb-sg (80/443 from 0.0.0.0/0)
-  │
-  ▼
-App Servers (private-app subnet) ──► Security Group: app-sg (app_port from alb-sg)
-  │
-  ▼
-Database (private-db subnet) ──► Security Group: db-sg (db_port from app-sg)
+```mermaid
+sequenceDiagram
+    actor User as 👤 User / Client
+    participant IGW  as Internet Gateway
+    participant ALB  as ALB (Public Subnet)
+    participant APP  as App Server (Private)
+    participant DB   as Database (Private)
+    participant NAT  as NAT Gateway
 
-Bastion (public subnet) ──SSH──► App Servers (port 22 from bastion-sg)
+    Note over User,DB: Inbound — HTTPS request lifecycle
+    User  ->>  IGW : HTTPS :443
+    IGW   ->>  ALB : forward (alb-sg allows 80/443)
+    ALB   ->>  APP : forward (app-sg allows app_port from alb-sg)
+    APP   ->>  DB  : query   (db-sg allows db_port from app-sg)
+    DB    -->> APP : result
+    APP   -->> ALB : response
+    ALB   -->> User: response
 
-Private App → NAT Gateway → Internet Gateway → Internet  (outbound only)
-Private DB  ──────────────── NO internet route            (fully isolated)
+    Note over User,DB: SSH — Bastion access path
+    User  ->>  IGW : SSH :22
+    IGW   ->>  ALB : → Bastion (bastion-sg allows :22 from trusted IPs)
+    ALB   ->>  APP : SSH :22 (app-sg allows :22 from bastion-sg)
+
+    Note over APP,NAT: Outbound — Private app → internet (e.g. package install)
+    APP   ->>  NAT : outbound request
+    NAT   ->>  IGW : via Elastic IP
+    IGW   -->> NAT : response
+    NAT   -->> APP : return traffic
+
+    Note over DB: DB tier has NO outbound internet route
 ```
 
 ---
@@ -95,14 +112,49 @@ Private DB  ──────────────── NO internet route  
 ## Security Model
 
 ### Security Groups (stateful)
-| Group | Inbound | Outbound |
-|---|---|---|
-| `bastion-sg` | SSH (22) from `trusted_cidr_blocks` | All |
-| `alb-sg` | HTTP (80), HTTPS (443) from `0.0.0.0/0` | All |
-| `app-sg` | `app_port` from `alb-sg`; SSH (22) from `bastion-sg` | All |
-| `db-sg` | `db_port` from `app-sg` | VPC CIDR only |
+
+```mermaid
+graph LR
+    INET(["🌐 Internet\n0.0.0.0/0"])
+    TRUST(["🔒 Trusted IP\nyour-ip/32"])
+
+    subgraph SGs["Security Groups — least-privilege chain"]
+        BASTION["bastion-sg\n─────────────\nIN  :22 ← trusted IPs\nOUT all"]
+        ALB["alb-sg\n─────────────\nIN  :80  ← internet\nIN  :443 ← internet\nOUT all"]
+        APP["app-sg\n─────────────\nIN  :app_port ← alb-sg\nIN  :22       ← bastion-sg\nOUT all"]
+        DB["db-sg\n─────────────\nIN  :db_port ← app-sg\nOUT VPC CIDR only"]
+    end
+
+    TRUST -->|SSH :22| BASTION
+    INET  -->|:80 / :443| ALB
+    ALB   -->|app_port| APP
+    BASTION -->|SSH :22| APP
+    APP   -->|db_port| DB
+```
 
 ### Network ACLs (stateless — second layer)
+
+```mermaid
+graph TD
+    subgraph NACL_PUB["NACL — Public Subnets"]
+        direction LR
+        P_IN["INBOUND\n100 TCP :80   ALLOW\n110 TCP :443  ALLOW\n120 TCP :22   ALLOW\n140 TCP :1024-65535 ALLOW"]
+        P_OUT["OUTBOUND\n100 ALL  ALLOW"]
+    end
+
+    subgraph NACL_APP["NACL — Private App Subnets"]
+        direction LR
+        A_IN["INBOUND\n100 TCP :app_port from VPC ALLOW\n110 TCP :22        from VPC ALLOW\n140 TCP :1024-65535       ALLOW"]
+        A_OUT["OUTBOUND\n100 ALL  ALLOW"]
+    end
+
+    subgraph NACL_DB["NACL — Private DB Subnets"]
+        direction LR
+        D_IN["INBOUND\n100 TCP :db_port from app-subnet-1 ALLOW\n110 TCP :db_port from app-subnet-2 ALLOW\n140 TCP :1024-65535 from VPC      ALLOW"]
+        D_OUT["OUTBOUND\n100 ALL to VPC CIDR ALLOW"]
+    end
+```
+
 | NACL | Key Rules |
 |---|---|
 | Public | Allow 80/443/22 inbound; ephemeral ports; all outbound |
